@@ -1,0 +1,42 @@
+{
+    "name":  "dsh-desktop-control",
+    "version":  "0.2.5",
+    "private":  true,
+    "type":  "module",
+    "description":  "Windows 桌面观察与操作，使用当前 DSH 云端模型。",
+    "main":  "lib/index.js",
+    "exports":  {
+                    ".":  "./lib/index.js",
+                    "./client":  "./lib/client.js",
+                    "./package.json":  "./package.json"
+                },
+    "files":  [
+                  "lib",
+                  "vendor",
+                  "skills",
+                  "cordis.patch.yml",
+                  "README.md",
+                  "LICENSE",
+                  "THIRD_PARTY.md"
+              ],
+    "engines":  {
+                    "node":  "\u003e=22",
+                    "dsh":  "0.2.1-rc.2"
+                },
+    "os":  [
+               "win32"
+           ],
+    "license":  "MIT",
+    "dsh":  {
+                "bundle":  {
+                               "patch":  "./cordis.patch.yml"
+                           },
+                "client":  {
+                               "platform":  "web",
+                               "inject":  [
+                                              "dsh-plugin-hub",
+                                              "@deepseek-ai/dsh-client-ui-renderer"
+                                          ]
+                           }
+            }
+}
