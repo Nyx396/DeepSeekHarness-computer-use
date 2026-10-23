@@ -1,0 +1,27 @@
+{
+  "name": "dsh-desktop-control",
+  "version": "0.1.5",
+  "private": true,
+  "type": "module",
+  "description": "Windows 桌面观察与操作，使用当前 DSH 云端模型。",
+  "main": "lib/index.js",
+  "exports": { ".": "./lib/index.js", "./client": "./lib/client.js", "./package.json": "./package.json" },
+  "files": ["lib", "vendor", "skills", "cordis.patch.yml", "README.md", "LICENSE", "THIRD_PARTY.md"],
+  "engines": { "node": ">=22", "dsh": "0.2.1-rc.2" },
+  "os": ["win32"],
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:native": "node test/native-smoke.mjs",
+    "test:host": "node test/host-smoke.mjs",
+    "test:ui": "node test/ui-smoke.mjs",
+    "test:boot": "node test/ui-boot.mjs",
+    "test:visual": "node test/overlay-render.mjs",
+    "check": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/portable.ps1 -Mode Check",
+    "package": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/package.ps1"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "platform": "web", "inject": ["dsh-plugin-hub", "@deepseek-ai/dsh-client-ui-renderer"] }
+  }
+}

@@ -1,0 +1,440 @@
+// Original Windows UI for DSH. Uses only framework APIs; no input is synthesized.
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Web.Script.Serialization;
+using System.Windows.Forms;
+
+namespace DshTakeover {
+  public static class Host {
+    public static void Run(string eventName, bool testMode) {
+      try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch (EntryPointNotFoundException) { }
+      Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
+      Application.EnableVisualStyles();
+      using (var context = new Controller(eventName, testMode)) Application.Run(context);
+    }
+  }
+
+  internal static class Native {
+    internal delegate IntPtr Hook(int code, IntPtr message, IntPtr data);
+    [StructLayout(LayoutKind.Sequential)] internal struct Key { public uint vk, scan, flags, time; public UIntPtr extra; }
+    [StructLayout(LayoutKind.Sequential)] internal struct Point { public int x, y; public Point(int a,int b) {x=a;y=b;} }
+    [StructLayout(LayoutKind.Sequential)] internal struct Size { public int cx, cy; public Size(int a,int b) {cx=a;cy=b;} }
+    [StructLayout(LayoutKind.Sequential)] internal struct Rect { public int left,top,right,bottom; internal Rectangle Bounds { get { return Rectangle.FromLTRB(left,top,right,bottom); } } }
+    [StructLayout(LayoutKind.Sequential)] internal struct MonitorInfo { public uint size; public Rect bounds,work; public uint flags; }
+    internal delegate bool MonitorCallback(IntPtr monitor,IntPtr dc,IntPtr rectangle,IntPtr data);
+    [StructLayout(LayoutKind.Sequential, Pack=1)] internal struct Blend { public byte op, flags, alpha, format; }
+    [DllImport("user32.dll")] internal static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+    [DllImport("user32.dll", SetLastError=true)] internal static extern IntPtr SetWindowsHookEx(int id, Hook callback, IntPtr module, uint thread);
+    [DllImport("user32.dll")] internal static extern bool UnhookWindowsHookEx(IntPtr hook);
+    [DllImport("user32.dll")] internal static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr message, IntPtr data);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] internal static extern IntPtr GetModuleHandle(string name);
+    [DllImport("user32.dll")] internal static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll",SetLastError=true)] internal static extern bool GetCursorPos(out Point point);
+    [DllImport("user32.dll")] internal static extern IntPtr MonitorFromPoint(Point point, uint flags);
+    [DllImport("user32.dll",SetLastError=true)] internal static extern bool EnumDisplayMonitors(IntPtr dc,IntPtr clip,MonitorCallback callback,IntPtr data);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] internal static extern bool GetMonitorInfo(IntPtr monitor,ref MonitorInfo info);
+    [DllImport("shcore.dll")] internal static extern int GetDpiForMonitor(IntPtr monitor, int type, out uint x, out uint y);
+    [DllImport("user32.dll")] internal static extern int GetWindowLong(IntPtr window, int index);
+    [DllImport("user32.dll")] internal static extern bool SetWindowDisplayAffinity(IntPtr window, uint affinity);
+    [DllImport("user32.dll")] internal static extern bool GetWindowDisplayAffinity(IntPtr window, out uint affinity);
+    [DllImport("user32.dll")] internal static extern bool SetWindowPos(IntPtr window,IntPtr after,int x,int y,int width,int height,uint flags);
+    [DllImport("user32.dll")] internal static extern IntPtr GetDC(IntPtr window);
+    [DllImport("user32.dll")] internal static extern int ReleaseDC(IntPtr window, IntPtr dc);
+    [DllImport("gdi32.dll")] internal static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")] internal static extern IntPtr SelectObject(IntPtr dc, IntPtr value);
+    [DllImport("gdi32.dll")] internal static extern bool DeleteObject(IntPtr value);
+    [DllImport("gdi32.dll")] internal static extern bool DeleteDC(IntPtr dc);
+    [DllImport("user32.dll", SetLastError=true)] internal static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr screenDc, ref Point destination, ref Size size, IntPtr sourceDc, ref Point source, uint key, ref Blend blend, uint flags);
+    internal static Rectangle[] ActiveDisplays() {
+      var result=new List<Rectangle>();
+      if(!EnumDisplayMonitors(IntPtr.Zero,IntPtr.Zero,delegate(IntPtr monitor,IntPtr dc,IntPtr rect,IntPtr data){
+        var info=new MonitorInfo {size=(uint)Marshal.SizeOf(typeof(MonitorInfo))};
+        if(GetMonitorInfo(monitor,ref info)&&info.bounds.right>info.bounds.left&&info.bounds.bottom>info.bounds.top)result.Add(info.bounds.Bounds);
+        return true;
+      },IntPtr.Zero))throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"Could not enumerate active displays");
+      result.Sort(delegate(Rectangle a,Rectangle b){int x=a.Left.CompareTo(b.Left);return x!=0?x:a.Top.CompareTo(b.Top);});
+      return result.ToArray();
+    }
+    internal static Rectangle DisplayFromPoint(Point point) {
+      var info=new MonitorInfo {size=(uint)Marshal.SizeOf(typeof(MonitorInfo))};
+      if(!GetMonitorInfo(MonitorFromPoint(point,2),ref info))throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"Could not locate pointer display");
+      return info.bounds.Bounds;
+    }
+    internal static string DisplayIdentity(Rectangle bounds) {
+      IntPtr monitor=MonitorFromPoint(new Point(bounds.Left+bounds.Width/2,bounds.Top+bounds.Height/2),2);
+      uint x=96,y=96;try{if(GetDpiForMonitor(monitor,0,out x,out y)!=0)x=y=96;}catch(EntryPointNotFoundException){}
+      return bounds.ToString()+"/"+monitor.ToInt64()+"/"+x+"/"+y;
+    }
+    internal static void KeepOnTop(IntPtr window) { SetWindowPos(window,new IntPtr(-1),0,0,0,0,0x213); }
+  }
+
+  internal sealed class Controller : ApplicationContext {
+    readonly Control dispatcher = new Control();
+    readonly EventWaitHandle cancel;
+    readonly Native.Hook callback;
+    readonly IntPtr hook;
+    readonly bool testMode;
+    readonly JavaScriptSerializer json = new JavaScriptSerializer();
+    readonly List<Frame> frames = new List<Frame>();
+    PointerFrame pointer;
+    Native.Point? testPointerPoint;
+    Rectangle[] displays=new Rectangle[0],testDisplays;
+    string displaySignature="";
+    DateTime nextDisplayPoll=DateTime.MinValue;
+    int displayRevision;
+    readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
+    bool armed, paused, shuttingDown;
+    readonly HashSet<int> physicalDown = new HashSet<int>(), swallowed = new HashSet<int>();
+    string stopShortcut = "";
+    int stopKey, stopModifiers;
+    DateTime hideAt = DateTime.MaxValue;
+    bool indicator = true, cursorIndicator = true, remoteVisible = true;
+    int cursorError;
+    string text = "DSH 正在控制电脑", position = "top";
+    int idleMs = 800;
+
+    internal Controller(string eventName, bool tests) {
+      testMode = tests;
+      cancel = new EventWaitHandle(false, EventResetMode.ManualReset, eventName);
+      var handle = dispatcher.Handle;
+      callback = OnKey;
+      hook = Native.SetWindowsHookEx(13, callback, Native.GetModuleHandle(null), 0);
+      if (hook == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not install the stop shortcut listener");
+      timer.Interval = 35;
+      timer.Tick += delegate {
+        double elapsed = hideAt == DateTime.MaxValue ? -1 : (DateTime.UtcNow - hideAt).TotalMilliseconds;
+        if (elapsed >= 160) { HideFrames(); HidePointer(); armed = false; hideAt = DateTime.MaxValue; return; }
+        byte alpha = elapsed >= 0 ? (byte)Math.Max(0, 255 * (1 - elapsed / 160)) : (byte)255;
+        if(armed&&!paused)RefreshDisplays(false);
+        UpdatePointer(alpha);
+        if (elapsed >= 0) foreach (var frame in frames) frame.Present(alpha);
+      };
+      timer.Start();
+      SystemEventsSubscribe();
+      new Thread(ReadCommands) { IsBackground = true, Name = "DSH takeover control" }.Start();
+      RefreshDisplays(true);
+      Emit(new { kind = "ready", hookActive = true, monitors = displays.Length });
+    }
+
+    void SystemEventsSubscribe() { Microsoft.Win32.SystemEvents.DisplaySettingsChanged += DisplaysChanged; Microsoft.Win32.SystemEvents.SessionSwitch += SessionChanged; }
+    void SessionChanged(object sender,Microsoft.Win32.SessionSwitchEventArgs args) { DisplaysChanged(sender,EventArgs.Empty); }
+    void DisplaysChanged(object sender, EventArgs args) {
+      if (shuttingDown) return;
+      try { dispatcher.BeginInvoke((Action)delegate { RefreshDisplays(true); UpdatePointer(255); }); } catch (InvalidOperationException) { }
+    }
+    bool RefreshDisplays(bool force) {
+      if(!force&&DateTime.UtcNow<nextDisplayPoll)return false;
+      nextDisplayPoll=DateTime.UtcNow.AddMilliseconds(500);
+      Rectangle[] next=testMode&&testDisplays!=null?testDisplays:Native.ActiveDisplays();
+      string signature=String.Join(";",Array.ConvertAll(next,delegate(Rectangle r){return Native.DisplayIdentity(r);}));
+      if(signature==displaySignature){foreach(var frame in frames)Native.KeepOnTop(frame.Handle);if(pointer!=null)Native.KeepOnTop(pointer.Handle);return false;}
+      displays=next;displaySignature=signature;displayRevision++;
+      HideFrames();HidePointer();
+      if(armed&&!paused&&indicator)ShowFrames();
+      return true;
+    }
+    void ConfigureVisibility(bool visible) {
+      remoteVisible=visible;
+      foreach(var frame in frames)frame.SetRemoteVisible(visible);
+      if(pointer!=null)pointer.SetRemoteVisible(visible);
+    }
+    void Emit(object value) { lock (json) { Console.Out.WriteLine(json.Serialize(value)); Console.Out.Flush(); } }
+    void ReadCommands() {
+      try {
+        string line;
+        while ((line = Console.ReadLine()) != null) {
+          var command = new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(line);
+          dispatcher.BeginInvoke((Action)(() => Dispatch(command)));
+        }
+      } catch (Exception error) { Console.Error.WriteLine(error.Message); }
+      finally { try { cancel.Set(); } catch (ObjectDisposedException) { } try { dispatcher.BeginInvoke((Action)(() => ExitThread())); } catch (InvalidOperationException) { } }
+    }
+    static T Get<T>(Dictionary<string,object> command, string name, T fallback) {
+      object value; return command.TryGetValue(name, out value) ? (T)Convert.ChangeType(value, typeof(T)) : fallback;
+    }
+    void Dispatch(Dictionary<string,object> command) {
+      object id; command.TryGetValue("id", out id);
+      try {
+        bool consumed = false;
+        string action = Get(command, "command", "");
+        if (action == "begin" || action == "preview") {
+          if (paused) throw new InvalidOperationException("COMPUTER_USE_STOPPED_BY_USER");
+          ConfigureShortcut(Get(command, "stopShortcut", stopShortcut));
+          bool nextIndicator = Get(command, "indicatorEnabled", true);
+          ConfigureVisibility(Get(command,"remoteIndicatorVisible",true));
+          cursorIndicator = Get(command, "cursorIndicatorEnabled", true);
+          string nextText = Get(command, "indicatorText", "DSH 正在控制电脑"), nextPosition = Get(command, "indicatorPosition", "top");
+          bool rebuild = nextIndicator != indicator || nextText != text || nextPosition != position || frames.Count == 0;
+          indicator = nextIndicator; text = nextText; position = nextPosition;
+          idleMs = Math.Max(200, Math.Min(3000, Get(command, "indicatorIdleMs", 800)));
+          armed = true; hideAt = action == "preview" ? DateTime.UtcNow.AddMilliseconds(1800) : DateTime.MaxValue;
+          bool displaysRebuilt=RefreshDisplays(true);
+          if (!indicator) HideFrames();
+          else if (rebuild&&!displaysRebuilt) { HideFrames(); ShowFrames(); }
+          else foreach (var frame in frames) frame.Present(255);
+          UpdatePointer(255);
+        } else if (action == "configure") {
+          ConfigureShortcut(Get(command, "stopShortcut", ""));
+          ConfigureVisibility(Get(command,"remoteIndicatorVisible",remoteVisible));
+          cursorIndicator = Get(command, "cursorIndicatorEnabled", cursorIndicator); UpdatePointer(255);
+        } else if (action == "end") {
+          hideAt = DateTime.UtcNow.AddMilliseconds(idleMs);
+        } else if (action == "stop") {
+          Stop("user");
+        } else if (action == "resume") {
+          paused = false; armed = false; cancel.Reset(); HideFrames(); HidePointer(); hideAt = DateTime.MaxValue;
+        } else if (action == "close") {
+          cancel.Set(); ExitThread();
+        } else if (action == "test_key" && testMode) {
+          consumed = HandleKey(Get(command, "vk", 0), Get(command, "injected", false), Get(command, "down", true));
+        } else if (action == "test_render" && testMode) {
+          using (var image = Frame.Draw(1200, 675, Get(command, "indicatorText", text), Get(command, "indicatorPosition", "top"))) image.Save(Get(command, "path", ""), ImageFormat.Png);
+        } else if (action == "test_render_pointer" && testMode) {
+          float zoom=(float)Get(command,"scale",2.0);
+          using (var image = PointerFrame.Draw(zoom, false, false)) {
+            using (var graphics = Graphics.FromImage(image)) Cursors.Arrow.Draw(graphics, new Rectangle((int)(24*zoom),(int)(24*zoom),(int)(16*zoom),(int)(16*zoom)));
+            image.Save(Get(command, "path", ""), ImageFormat.Png);
+          }
+        } else if (action == "test_pointer_source" && testMode) {
+          testPointerPoint=new Native.Point(Get(command,"x",200),Get(command,"y",200)); UpdatePointer(255);
+        } else if (action == "test_pointer_layout" && testMode) {
+          var bounds = PointerFrame.LayoutForPoint(new Native.Point(Get(command,"x",0),Get(command,"y",0)), new Rectangle(Get(command,"left",0),Get(command,"top",0),Get(command,"width",1920),Get(command,"height",1080)), (float)Get(command,"scale",1.0));
+          Emit(new { id=id,ok=true,left=bounds.X,top=bounds.Y,width=bounds.Width,height=bounds.Height }); return;
+        } else if(action=="test_displays"&&testMode) {
+          object supplied;if(!command.TryGetValue("displays",out supplied)||!(supplied is System.Collections.IEnumerable))throw new ArgumentException("Displays array required");
+          var next=new List<Rectangle>();
+          foreach(var item in (System.Collections.IEnumerable)supplied){var r=item as Dictionary<string,object>;if(r==null)throw new ArgumentException("Display object required");int width=Get(r,"width",0),height=Get(r,"height",0);if(width<64||height<64||width>8192||height>8192)throw new ArgumentException("Invalid test display size");next.Add(new Rectangle(Get(r,"left",0),Get(r,"top",0),width,height));}
+          testDisplays=next.ToArray();nextDisplayPoll=DateTime.MinValue;
+        } else if(action=="test_restore_displays"&&testMode) {
+          testDisplays=null;nextDisplayPoll=DateTime.MinValue;
+        } else if (action != "status") throw new InvalidOperationException("Unknown takeover command");
+        Native.Point livePoint; bool liveCursorAvailable=Native.GetCursorPos(out livePoint);
+        Emit(new { id = id, ok = true, armed = armed, paused = paused, cancelled = cancel.WaitOne(0), consumed = consumed, stopShortcut = stopShortcut, windows = frames.Count, remoteIndicatorVisible=remoteVisible, overlayCaptureExcluded=frames.Count>0&&frames.TrueForAll(frame=>frame.CaptureExcluded), overlayClickThrough=frames.Count>0&&frames.TrueForAll(frame=>frame.ClickThrough), displayRevision=displayRevision, displays=Array.ConvertAll(displays,r=>new {left=r.Left,top=r.Top,width=r.Width,height=r.Height}), overlayBounds=frames.ConvertAll(frame=>new {left=frame.DisplayBounds.Left,top=frame.DisplayBounds.Top,width=frame.DisplayBounds.Width,height=frame.DisplayBounds.Height}), cursorError = cursorError, liveCursorAvailable = liveCursorAvailable, pointerSource = testPointerPoint.HasValue ? "test-seam" : "windows", pointerVisible = pointer != null, pointerClickThrough = pointer != null && pointer.ClickThrough, pointerCaptureExcluded = pointer != null && pointer.CaptureExcluded, foreground = Native.GetForegroundWindow().ToInt64() });
+      } catch (Exception error) { Emit(new { id = id, ok = false, error = error.Message }); }
+    }
+    IntPtr OnKey(int code, IntPtr message, IntPtr data) {
+      if (code >= 0) {
+        int kind = message.ToInt32();
+        if (kind == 0x100 || kind == 0x104 || kind == 0x101 || kind == 0x105) {
+          var key = (Native.Key)Marshal.PtrToStructure(data, typeof(Native.Key));
+          if (HandleKey((int)key.vk, (key.flags & 0x12) != 0, kind == 0x100 || kind == 0x104)) return new IntPtr(1);
+        }
+      }
+      return Native.CallNextHookEx(hook, code, message, data);
+    }
+    static int Modifier(int vk) {
+      if (vk == 0x11 || vk == 0xA2 || vk == 0xA3) return 1;
+      if (vk == 0x12 || vk == 0xA4 || vk == 0xA5) return 2;
+      if (vk == 0x10 || vk == 0xA0 || vk == 0xA1) return 4;
+      if (vk == 0x5B || vk == 0x5C) return 8;
+      return 0;
+    }
+    void ConfigureShortcut(string shortcut) {
+      int nextKey = 0, nextModifiers = 0;
+      if (shortcut.Length > 0) {
+        string[] parts = shortcut.Split('+');
+        for (int i = 0; i < parts.Length - 1; i++) {
+          int flag = parts[i] == "Ctrl" ? 1 : parts[i] == "Alt" ? 2 : parts[i] == "Shift" ? 4 : parts[i] == "Win" ? 8 : 0;
+          if (flag == 0 || (nextModifiers & flag) != 0) throw new ArgumentException("Invalid stop shortcut modifiers");
+          nextModifiers |= flag;
+        }
+        string key = parts[parts.Length - 1]; int number;
+        if (key.Length == 1 && ((key[0] >= 'A' && key[0] <= 'Z') || (key[0] >= '0' && key[0] <= '9'))) nextKey = key[0];
+        else if (key.StartsWith("F") && int.TryParse(key.Substring(1), out number) && number >= 1 && number <= 24) nextKey = 0x6F + number;
+        else {
+          var common = new Dictionary<string,int> { {"Space",0x20},{"Enter",0x0D},{"Tab",0x09},{"Backspace",0x08},{"Delete",0x2E},{"Insert",0x2D},{"Home",0x24},{"End",0x23},{"PageUp",0x21},{"PageDown",0x22},{"Up",0x26},{"Down",0x28},{"Left",0x25},{"Right",0x27},{"Pause",0x13},{"CapsLock",0x14},{"NumLock",0x90},{"ScrollLock",0x91} };
+          if (!common.TryGetValue(key, out nextKey)) throw new ArgumentException("Invalid stop shortcut key");
+        }
+      }
+      stopShortcut = shortcut; stopKey = nextKey; stopModifiers = nextModifiers;
+    }
+    bool HandleKey(int vk, bool injected, bool down) {
+      if (injected) return false;
+      if (!down) { physicalDown.Remove(vk); return swallowed.Remove(vk); }
+      physicalDown.Add(vk);
+      if (swallowed.Contains(vk)) return true;
+      if (!armed || paused) return false;
+      int modifiers = 0; foreach (int key in physicalDown) modifiers |= Modifier(key);
+      if (vk != 0x1B && (stopKey == 0 || vk != stopKey || modifiers != stopModifiers)) return false;
+      swallowed.Add(vk);
+      // Signal the worker first, before any rendering or pipe activity.
+      cancel.Set(); Stop(vk == 0x1B ? "escape" : "shortcut"); return true;
+    }
+    void Stop(string reason) {
+      cancel.Set(); paused = true; armed = false; hideAt = DateTime.MaxValue; HideFrames(); HidePointer();
+      Emit(new { kind = "stopped", reason = reason });
+    }
+    void ShowFrames() {
+      foreach (var bounds in displays) { var frame = new Frame(bounds, text, position,remoteVisible); frames.Add(frame); frame.Show(); frame.Present(255); }
+    }
+    void HideFrames() { foreach (var frame in frames) frame.Dispose(); frames.Clear(); }
+    void UpdatePointer(byte alpha) {
+      if (!armed || paused || !cursorIndicator) { HidePointer(); return; }
+      Native.Point point;
+      if(testMode&&testPointerPoint.HasValue)point=testPointerPoint.Value;
+      else if (!Native.GetCursorPos(out point)) { cursorError=Marshal.GetLastWin32Error(); HidePointer(); return; }
+      cursorError=0;
+      if (pointer == null) { pointer = new PointerFrame(remoteVisible); pointer.Update(point, alpha); pointer.Show(); }
+      else pointer.Update(point, alpha);
+    }
+    void HidePointer() { if (pointer != null) { pointer.Dispose(); pointer = null; } }
+    protected override void Dispose(bool disposing) {
+      if (disposing && !shuttingDown) {
+        shuttingDown = true; cancel.Set(); timer.Stop(); timer.Dispose(); HideFrames(); HidePointer();
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= DisplaysChanged;
+        Microsoft.Win32.SystemEvents.SessionSwitch -= SessionChanged;
+        if (hook != IntPtr.Zero) Native.UnhookWindowsHookEx(hook);
+        dispatcher.Dispose(); cancel.Dispose();
+      }
+      base.Dispose(disposing);
+    }
+  }
+
+  // A small cursor-following layer. The system cursor, theme and input state
+  // remain owned by Windows; closing/crashing this process leaves no cursor changes.
+  internal sealed class PointerFrame : Form {
+    IntPtr dc, bitmap, previous;
+    float scale;
+    bool flipX, flipY;
+    Rectangle lastBounds;
+    byte lastAlpha;
+    bool remoteVisible;
+    internal PointerFrame(bool visible) {
+      remoteVisible=visible;
+      AutoScaleMode = AutoScaleMode.None; FormBorderStyle = FormBorderStyle.None;
+      ShowInTaskbar = false; TopMost = true; StartPosition = FormStartPosition.Manual;
+      Bounds = new Rectangle(0,0,1,1);
+      dc = Native.CreateCompatibleDC(IntPtr.Zero);
+    }
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override CreateParams CreateParams {
+      get { var value=base.CreateParams; value.ExStyle|=0x80000|0x20|0x80|0x08000000; return value; }
+    }
+    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); SetRemoteVisible(remoteVisible); }
+    internal void SetRemoteVisible(bool visible) {remoteVisible=visible;if(IsHandleCreated)Native.SetWindowDisplayAffinity(Handle,visible?0u:0x11u);}
+    internal bool ClickThrough { get { return (Native.GetWindowLong(Handle,-20)&0x08080020)==0x08080020; } }
+    internal bool CaptureExcluded { get { uint affinity; return Native.GetWindowDisplayAffinity(Handle,out affinity)&&affinity==0x11; } }
+    static bool FlipX(Native.Point point, Rectangle screen, float zoom) { return screen.Right-point.x < 96*zoom; }
+    static bool FlipY(Native.Point point, Rectangle screen, float zoom) { return screen.Bottom-point.y < 66*zoom; }
+    internal static Rectangle LayoutForPoint(Native.Point point, Rectangle screen, float zoom) {
+      int width=(int)Math.Ceiling(120*zoom),height=(int)Math.Ceiling(84*zoom);
+      int centerX=(int)Math.Round((FlipX(point,screen,zoom)?96:24)*zoom),centerY=(int)Math.Round((FlipY(point,screen,zoom)?60:24)*zoom);
+      return new Rectangle(point.x-centerX,point.y-centerY,width,height);
+    }
+    internal void Update(Native.Point point, byte alpha) {
+      var screen=Native.DisplayFromPoint(point);
+      uint dpiX=96,dpiY=96; try { if(Native.GetDpiForMonitor(Native.MonitorFromPoint(point,2),0,out dpiX,out dpiY)!=0)dpiX=96; } catch(EntryPointNotFoundException) { }
+      float zoom=Math.Max(1f,Math.Min(3f,dpiX/96f));
+      bool nextFlipX=FlipX(point,screen,zoom),nextFlipY=FlipY(point,screen,zoom);
+      bool redraw=bitmap==IntPtr.Zero||Math.Abs(scale-zoom)>.01f||flipX!=nextFlipX||flipY!=nextFlipY;
+      if(redraw) {
+        using(var image=Draw(zoom,nextFlipX,nextFlipY)) {
+          IntPtr next=image.GetHbitmap(Color.FromArgb(0));
+          IntPtr selected=Native.SelectObject(dc,next);
+          if(bitmap==IntPtr.Zero)previous=selected; else Native.DeleteObject(bitmap);
+          bitmap=next;
+        }
+        scale=zoom;flipX=nextFlipX;flipY=nextFlipY;
+      }
+      var bounds=LayoutForPoint(point,screen,zoom);
+      if(!redraw&&bounds==lastBounds&&alpha==lastAlpha)return;
+      var destination=new Native.Point(bounds.X,bounds.Y);var origin=new Native.Point(0,0);var size=new Native.Size(bounds.Width,bounds.Height);
+      var blend=new Native.Blend { op=0,flags=0,alpha=alpha,format=1 };
+      if(!Native.UpdateLayeredWindow(Handle,IntPtr.Zero,ref destination,ref size,dc,ref origin,0,ref blend,2))throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"Could not present pointer indicator");
+      lastBounds=bounds;lastAlpha=alpha;
+    }
+    internal static Bitmap Draw(float zoom,bool left,bool up) {
+      var image=new Bitmap((int)Math.Ceiling(120*zoom),(int)Math.Ceiling(84*zoom),PixelFormat.Format32bppPArgb);
+      using(var g=Graphics.FromImage(image)) {
+        g.Clear(Color.Transparent);g.SmoothingMode=SmoothingMode.AntiAlias;g.ScaleTransform(zoom,zoom);
+        float x=left?96:24,y=up?60:24;
+        using(var fill=new SolidBrush(Color.FromArgb(30,70,160,255)))g.FillEllipse(fill,x-20,y-20,40,40);
+        using(var outline=new Pen(Color.FromArgb(240,100,190,255),2))g.DrawEllipse(outline,x-15,y-15,30,30);
+        float bx=left?x-72:x+18,by=up?y-35:y+13;
+        using(var shape=Frame.Rounded(new RectangleF(bx,by,54,22),7)) {
+          using(var fill=new SolidBrush(Color.FromArgb(244,20,55,91)))g.FillPath(fill,shape);
+          using(var outline=new Pen(Color.FromArgb(240,110,195,255),1))g.DrawPath(outline,shape);
+        }
+        using(var font=new Font("Segoe UI",9,FontStyle.Bold,GraphicsUnit.Pixel))
+        using(var brush=new SolidBrush(Color.FromArgb(255,237,247,255)))
+        using(var format=new StringFormat {Alignment=StringAlignment.Center,LineAlignment=StringAlignment.Center})g.DrawString("DSH",font,brush,new RectangleF(bx,by,54,22),format);
+      }
+      return image;
+    }
+    protected override void Dispose(bool disposing) {
+      if(dc!=IntPtr.Zero) { if(bitmap!=IntPtr.Zero){Native.SelectObject(dc,previous);Native.DeleteObject(bitmap);}Native.DeleteDC(dc);dc=IntPtr.Zero; }
+      base.Dispose(disposing);
+    }
+  }
+
+  internal sealed class Frame : Form {
+    readonly Rectangle rectangle;
+    bool remoteVisible;
+    IntPtr dc, bitmap, previous;
+    internal Frame(Rectangle bounds, string text, string position,bool visible) {
+      remoteVisible=visible;rectangle = bounds; AutoScaleMode=AutoScaleMode.None;FormBorderStyle = FormBorderStyle.None;
+      ShowInTaskbar = false; TopMost = true; StartPosition = FormStartPosition.Manual;
+      Bounds=bounds;
+      using (var image = Draw(bounds.Width, bounds.Height, text, position)) bitmap = image.GetHbitmap(Color.FromArgb(0));
+      dc = Native.CreateCompatibleDC(IntPtr.Zero); previous = Native.SelectObject(dc, bitmap);
+    }
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override CreateParams CreateParams {
+      get { var value = base.CreateParams; value.ExStyle |= 0x80000 | 0x20 | 0x80 | 0x08000000; return value; }
+    }
+    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); SetRemoteVisible(remoteVisible); }
+    internal void SetRemoteVisible(bool visible) {remoteVisible=visible;if(IsHandleCreated)Native.SetWindowDisplayAffinity(Handle,visible?0u:0x11u);}
+    internal Rectangle DisplayBounds {get{return rectangle;}}
+    internal bool CaptureExcluded { get { uint affinity;return Native.GetWindowDisplayAffinity(Handle,out affinity)&&affinity==0x11; } }
+    internal bool ClickThrough {get{return (Native.GetWindowLong(Handle,-20)&0x08080020)==0x08080020;}}
+    internal void Present(byte alpha) {
+      if (IsDisposed) return;
+      var destination = new Native.Point(rectangle.X, rectangle.Y); var origin = new Native.Point(0,0);
+      var size = new Native.Size(rectangle.Width,rectangle.Height);
+      var blend = new Native.Blend { op=0, flags=0, alpha=alpha, format=1 };
+      if (!Native.UpdateLayeredWindow(Handle, IntPtr.Zero, ref destination, ref size, dc, ref origin, 0, ref blend, 2)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not present takeover overlay");
+    }
+    internal static Bitmap Draw(int width, int height, string text, string position) {
+      var image = new Bitmap(width,height,PixelFormat.Format32bppPArgb);
+      using (var g = Graphics.FromImage(image)) {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.Clear(Color.Transparent);
+        g.CompositingMode = CompositingMode.SourceCopy;
+        for (int i=0;i<12;i++) {
+          int alpha=(int)(110*Math.Pow(1-i/12.0,2));
+          using (var pen = new Pen(Color.FromArgb(alpha,114,199,255),1)) g.DrawRectangle(pen,i,i,width-2*i-1,height-2*i-1);
+        }
+        g.CompositingMode = CompositingMode.SourceOver;
+        using (var pen = new Pen(Color.FromArgb(160,150,215,255),1)) g.DrawRectangle(pen,0,0,width-1,height-1);
+        float scale = Math.Max(1f, Math.Min(2f, width/1920f));
+        using (var font = new Font("Microsoft YaHei UI",10f*scale,FontStyle.Regular,GraphicsUnit.Point)) {
+          string label = text + "  ·  Esc 停止";
+          var measured = g.MeasureString(label,font);
+          float boxWidth = Math.Min(width-48,measured.Width+42*scale),boxHeight=42*scale;
+          float x=(width-boxWidth)/2, y=position=="bottom"?height-boxHeight-22*scale:22*scale;
+          using(var shape = Rounded(new RectangleF(x,y,boxWidth,boxHeight),12*scale)) {
+            using(var fill = new SolidBrush(Color.FromArgb(238,21,38,59))) g.FillPath(fill,shape);
+            using(var outline = new Pen(Color.FromArgb(190,101,188,255),1)) g.DrawPath(outline,shape);
+          }
+          using(var brush=new SolidBrush(Color.FromArgb(255,234,246,255)))
+          using(var format=new StringFormat {Alignment=StringAlignment.Center,LineAlignment=StringAlignment.Center,Trimming=StringTrimming.EllipsisCharacter,FormatFlags=StringFormatFlags.NoWrap})
+            g.DrawString(label,font,brush,new RectangleF(x+12,y,boxWidth-24,boxHeight),format);
+        }
+      }
+      return image;
+    }
+    internal static GraphicsPath Rounded(RectangleF r,float radius) {
+      var p=new GraphicsPath(); float d=radius*2;
+      p.AddArc(r.X,r.Y,d,d,180,90);p.AddArc(r.Right-d,r.Y,d,d,270,90);p.AddArc(r.Right-d,r.Bottom-d,d,d,0,90);p.AddArc(r.X,r.Bottom-d,d,d,90,90);p.CloseFigure();return p;
+    }
+    protected override void Dispose(bool disposing) {
+      if (dc!=IntPtr.Zero) { Native.SelectObject(dc,previous); Native.DeleteObject(bitmap); Native.DeleteDC(dc); dc=IntPtr.Zero; }
+      base.Dispose(disposing);
+    }
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "repository": "https://github.com/Yu-tao-Li/dsh-computer-use-win",
+  "commit": "a6d6c2e625e15ca322842b038b4e9165bee1d42f",
+  "version": "0.5.0",
+  "license": "MIT",
+  "retrieved": "2026-10-22",
+  "modifications": "None. Selected runtime and wiki files only; original package.json retained as provenance, not an install target.",
+  "files": [
+    {
+      "path": "package.json",
+      "gitBlob": "b79956d300f929e88d50752020702cdee1b08175"
+    },
+    {
+      "path": "LICENSE",
+      "gitBlob": "8da76070d80e29fd36753603995c0cc45b6e4157"
+    },
+    {
+      "path": "THIRD_PARTY.md",
+      "gitBlob": "cc29f7e469997f6114381a3e589969de5b75f149"
+    },
+    {
+      "path": "mcp/server.mjs",
+      "gitBlob": "c1fee1e1c04c298eabe106638ca0a42fb872bc9c"
+    },
+    {
+      "path": "mcp/settings.mjs",
+      "gitBlob": "d6001d2d56f18638497da6c88498b6bb52ec2772"
+    },
+    {
+      "path": "mcp/takeover.mjs",
+      "gitBlob": "56d0ddb6b58431638d51613f310474555c7be8b4"
+    },
+    {
+      "path": "scripts/windows-uia.ps1",
+      "gitBlob": "c3baf38dab9208d8d91b36b6b3bc723dbc1bd108"
+    },
+    {
+      "path": "scripts/windows-takeover.ps1",
+      "gitBlob": "424979400fd02dc965f76a973fb6ed00261f2282"
+    },
+    {
+      "path": "scripts/windows-takeover.cs",
+      "gitBlob": "65a01abdb933a357ff1d7af50291cf53ee1887f1"
+    },
+    {
+      "path": "docs/wiki/Home.md",
+      "gitBlob": "e5eab52d0c1dfe12e8b282479bd3a9b58f2433c8"
+    },
+    {
+      "path": "docs/wiki/architecture.md",
+      "gitBlob": "798f212e27ee63345f24a3c99d5c1839f119f231"
+    },
+    {
+      "path": "docs/wiki/mac-codex-computer-use.md",
+      "gitBlob": "dd464c7d6734849f2fb5e3d54d405ffcf44083a9"
+    },
+    {
+      "path": "docs/wiki/app-technology-matrix.md",
+      "gitBlob": "afa8918fdb83b684b1aedd43fb2884e9eb576736"
+    },
+    {
+      "path": "docs/wiki/mcp-tools.md",
+      "gitBlob": "746c137b5057d2a8663c0959195c74ecf68a288c"
+    },
+    {
+      "path": "docs/wiki/safety.md",
+      "gitBlob": "4d25d5fdbeef55fede5ebb8fa23ad122921a1bb8"
+    }
+  ]
+}
