@@ -1,6 +1,6 @@
 # DSH Desktop Control · 桌面操作
 
-Windows 桌面操作插件测试版，包名 `dsh-desktop-control`，版本 `0.2.5`。面向 DSH Desktop `0.2.1-rc.2`、Windows x64、系统 Windows PowerShell 5.1。使用已有 `dsh-plugin-hub 1.0.0` 的扩展口袋和插件配置页。
+Windows 桌面操作插件测试版，包名 `dsh-desktop-control`，版本 `0.2.6`。面向 DSH Desktop `0.2.1-rc.3`、Windows x64、系统 Windows PowerShell 5.1。使用已有 `dsh-plugin-hub 1.0.1` 的扩展口袋和插件配置页。
 
 ## 使用
 
@@ -44,6 +44,10 @@ Windows 短暂占用状态文件时，插件仅对原子替换写入做有界重
 
 输入前再次校验目标准备情况，并在原生派发前检查焦点、坐标实际命中的窗口及共享鼠标位置。如果中途窗口布局变化，先准备目标，再返回 `DESKTOP_REOBSERVE_REQUIRED`，模型沿用原任务令牌、重新观察后继续。本次不会派发旧输入。遮挡消失后的前台切换会在同一次准备中有界等待重试；焦点仍未就绪且遮挡列表为空时返回 `DESKTOP_TARGET_FOCUS_NOT_READY` 与前台窗口元数据，不误报为透明层遮挡。透明鼠标穿透不等于允许向非目标焦点窗口输入。仍无法准备时返回具体原因；截图能看到后台内容不等于该位置可点击。Esc 和暂停同样中止准备流程。
 
+## 0.2.6 宿主兼容
+
+本次适配 DSH 0.2.1-rc.3 和扩展口袋 1.0.1；桌面操作逻辑沿用已验证的 0.2.5。候选包自动测试通过后可准备安装，真实 rc.3 桌面验收仍需安装后完成。
+
 ## 0.2.5 焦点恢复
 
 0.2.5 将透明桌宠及分层浮层下的焦点恢复纳入统一准备流程。激活目标时连接前台与目标线程的输入队列，针对透明/分层浮层及任务栏过渡增加最多 1600 毫秒的轮询恢复窗口；只在确实取得目标前台后才允许输入。不修改桌宠样式，不按进程名放行，也不改变输入命中和停止规则。诊断中的 `focusRecoveryRevision: 1`、`focusAttempts`、`focusWaitMs`、`foregroundSamples` 和窗口扩展样式可供排查。
@@ -56,7 +60,7 @@ Windows 短暂占用状态文件时，插件仅对原子替换写入做有界重
 
 ## 安装
 
-ZIP 解压后，先运行“检查环境.cmd”，再运行“安装.cmd”；卸载使用“卸载.cmd”。必须完整解压，保留 `plugin/` 和 `tools/`。需要先安装 `dsh-plugin-hub 1.0.0`。ZIP 不包含本机验证记录、测试任务、截图、日志或 DSH 运行时副本。
+ZIP 解压后，先运行“检查环境.cmd”，再运行“安装.cmd”；卸载使用“卸载.cmd”。必须完整解压，保留 `plugin/` 和 `tools/`。需要先安装 `dsh-plugin-hub 1.0.1`。ZIP 不包含本机验证记录、测试任务、截图、日志或 DSH 运行时副本。
 
 先完全退出 DSH（包括托盘）。安装器不主动结束用户进程。源码目录也可直接运行：
 
@@ -86,7 +90,7 @@ npm run test:focus
 
 目录：`lib/` 为 DSH 接入与控制；`vendor/windows-engine/` 为固定版本的 MIT 引擎；`skills/` 为模型操作流程参考。维护源码另有 `test/` 和打包工具；公开的 `release/code` 与 ZIP 仅含运行代码、必要说明、安装器及许可证，不含开发测试、调查、日志或本机配置。
 
-在维护源码运行 `npm run package`，依据自动化与实机验收记录生成 `release/dsh-desktop-control-0.2.5-win-x64.zip`、整包 SHA-256 及 `release/code`。固定文件清单不包含测试输出或本机记录。`release/code` 将 package.json 放在根目录，并附带可直接使用的安装 CMD 和 `tools/portable.ps1`；ZIP 使用 `plugin/` 加顶层安装器的布局。两者的运行文件一致，公开 package.json 不保留未分发的开发脚本。
+在维护源码运行 `npm run package`，只有自动化与实机验收均通过才生成正式包。实机验收前可显式使用 `tools/package.ps1 -Candidate` 生成文件名带 candidate 的安装候选包，门禁记录仍保留 realMachinePass: false。正式流程依据自动化与实机验收记录生成 `release/dsh-desktop-control-0.2.6-win-x64.zip`、整包 SHA-256 及 `release/code`。固定文件清单不包含测试输出或本机记录。`release/code` 将 package.json 放在根目录，并附带可直接使用的安装 CMD 和 `tools/portable.ps1`；ZIP 使用 `plugin/` 加顶层安装器的布局。两者的运行文件一致，公开 package.json 不保留未分发的开发脚本。
 
 `lib/windows/visuals.cs` 是自有视觉层，`lib/windows/target.cs` 与 `target.ps1` 实现窗口准备和输入命中检查。启动已批准的桌面引擎时，在本实例临时目录组合视觉与目标适配；上游停止钩子及分发的 vendor 原始文件保持原字节。`lib/target.js` 为固定上游的原生输入入口注入检查，结构不匹配时拒绝运行。
 
