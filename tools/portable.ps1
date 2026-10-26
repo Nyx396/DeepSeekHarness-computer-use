@@ -315,22 +315,22 @@ function Assert-DesktopControlPluginSource($Environment) {
 function Assert-DesktopControlHostVersion($Environment) {
     $global:LASTEXITCODE = 0
     $versionOutput = (& $Environment.Cli --version 2>&1 | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '(?m)^0\.2\.1-rc\.2\s*$') {
-        throw ('This release requires DSH 0.2.1-rc.2. Detected CLI output: ' + $versionOutput)
+    if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '(?m)^0\.2\.1-rc\.3\s*$') {
+        throw ('This release requires DSH 0.2.1-rc.3. Detected CLI output: ' + $versionOutput)
     }
-    Write-Host 'DSH version: 0.2.1-rc.2'
+    Write-Host 'DSH version: 0.2.1-rc.3'
 }
 
 function Assert-DesktopControlHubDependency($Environment, $Manifest) {
     $hubName = 'dsh-plugin-hub'
     if (-not $Manifest.dependencies -or -not $Manifest.dependencies.PSObject.Properties[$hubName] -or @($Manifest.dsh.profile.bundles) -notcontains $hubName) {
-        throw 'Required dsh-plugin-hub is missing. Install dsh-plugin-hub 1.0.0 first, then run this installer again. Existing hub settings are not changed.'
+        throw 'Required dsh-plugin-hub is missing. Install dsh-plugin-hub 1.0.1 first, then run this installer again. Existing hub settings are not changed.'
     }
     $hubManifestPath = Join-Path $Environment.ProfileDir ('node_modules\' + $hubName + '\package.json')
     if (-not (Test-Path -LiteralPath $hubManifestPath -PathType Leaf)) { throw 'dsh-plugin-hub is registered but its installed package cannot be read. Repair the hub installation first.' }
     $hub = Read-DesktopControlJson $hubManifestPath
-    if ($hub.name -ne $hubName -or $hub.version -ne '1.0.0') { throw ('This release requires dsh-plugin-hub 1.0.0. Found: ' + $hub.version + '. No hub downgrade or replacement was attempted.') }
-    Write-Host 'Extension pocket dependency: dsh-plugin-hub 1.0.0 ready'
+    if ($hub.name -ne $hubName -or $hub.version -ne '1.0.1') { throw ('This release requires dsh-plugin-hub 1.0.1. Found: ' + $hub.version + '. No hub downgrade or replacement was attempted.') }
+    Write-Host 'Extension pocket dependency: dsh-plugin-hub 1.0.1 ready'
 }
 
 function Invoke-DesktopControlDeployment {
